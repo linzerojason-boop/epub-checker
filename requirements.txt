@@ -1,0 +1,4 @@
+# 运行与打包依赖（Python 3.10+，开发环境 3.12）
+PySide6-Essentials>=6.12
+Pillow>=10.0
+numpy>=1.24
