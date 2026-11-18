@@ -10,7 +10,7 @@ import zipfile
 from PySide6.QtCore import (QAbstractListModel, QAbstractTableModel, QEvent, QModelIndex,
                             QObject, QSettings, QSize, Qt, QSortFilterProxyModel,
                             QTimer, Signal)
-from PySide6.QtGui import (QAction, QColor, QFont, QKeySequence, QPixmap,
+from PySide6.QtGui import (QAction, QColor, QFont, QIcon, QKeySequence, QPixmap,
                             QShortcut)  # noqa: F401
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog,
                                QFileDialog,
@@ -2051,9 +2051,19 @@ class MainWindow(QMainWindow):
             self._update_start_state()
 
 
+def app_icon_path():
+    """exe 自我定位 app.ico（frozen 时在解包目录，源码时在脚本目录）。"""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    p = os.path.join(base, "app.ico")
+    return p if os.path.exists(p) else ""
+
+
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("EPUB 检查器")
+    ico = app_icon_path()
+    if ico:
+        app.setWindowIcon(QIcon(ico))
     app.setOrganizationName("epub_checker")
     w = MainWindow()
     w.show()
