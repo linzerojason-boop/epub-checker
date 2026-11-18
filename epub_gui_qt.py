@@ -22,8 +22,9 @@ from PySide6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QDialog,
                                QVBoxLayout, QWidget, QGroupBox)
 
 import epub_core as core
+import epub_i18n as i18n
 
-VERSION = "3.15"
+VERSION = "3.18"
 
 
 def settings_path():
@@ -185,12 +186,14 @@ class StatusFilterProxy(QSortFilterProxyModel):
 # ---------- 任务表模型 ----------
 
 COLUMNS = ["序号", "基准（A）", "待检（B）", "格式关系", "结论", "差异摘要", "备注"]
+COLUMN_KEYS = list(COLUMNS)   # 原始中文 key，显示时过 i18n.tr()
 
 
 class TaskTableModel(QAbstractTableModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.rows = []          # list[dict]
+        self.headers = [i18n.tr(k) for k in COLUMN_KEYS]
 
     def rowCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.rows)
@@ -200,8 +203,13 @@ class TaskTableModel(QAbstractTableModel):
 
     def headerData(self, section, orientation, role=Qt.DisplayRole):
         if orientation == Qt.Horizontal and role == Qt.DisplayRole:
-            return COLUMNS[section]
+            return self.headers[section]
         return None
+
+    def set_headers(self, heads):
+        """换语言时整表重设表头。"""
+        self.headers = list(heads)
+        self.headerDataChanged.emit(Qt.Horizontal, 0, len(self.headers) - 1)
 
     def data(self, index, role=Qt.DisplayRole):
         if not index.isValid():
@@ -218,7 +226,7 @@ class TaskTableModel(QAbstractTableModel):
             if col == 3:
                 return "同格式" if row.get("fmt_rel") == "same" else "跨格式"
             if col == 4:
-                return core.STATUS_TEXT.get(row["status"], row["status"])
+                return i18n.tr(core.STATUS_TEXT.get(row["status"], row["status"]))
             if col == 5:
                 return row.get("summary", "")
             if col == 6:
@@ -274,22 +282,42 @@ def run_bg(fn, name="bg"):
     threading.Thread(target=fn, daemon=True, name=name).start()
 
 
+def _default_merge_title(n):
+    """默认合并书名：中文「合并_N本」，英文 Merged_N。"""
+    return ("Merged_%d" if i18n.current() == "en" else "合并_%d本") % n
+
+
+def _retr(items):
+    """按 (控件, 方式, 原文) 重新设置文字；缺翻译时原样显示中文。"""
+    for w, kind, key in items:
+        text = i18n.tr(key)
+        if kind == "text":
+            w.setText(text)
+        elif kind == "title":
+            w.setTitle(text)
+
+
+_HEADERS = []  # [(QLabel, 原文)]，供切语言时重新设置
+
+
 def page_header(title, desc):
-    """每页顶部的标题 + 一句话说明。"""
+    """每页顶部的标题 + 一句话说明（文字可随语言切换）。"""
     box = QWidget()
     lay = QVBoxLayout(box)
     lay.setContentsMargins(0, 0, 0, 6)
     lay.setSpacing(2)
-    t = QLabel(title)
+    t = QLabel(i18n.tr(title))
     f = QFont()
     f.setBold(True)
     f.setPointSize(f.pointSize() + 3)
     t.setFont(f)
-    d = QLabel(desc)
+    d = QLabel(i18n.tr(desc))
     d.setWordWrap(True)
     d.setStyleSheet("color: #9e9e9e;")
     lay.addWidget(t)
     lay.addWidget(d)
+    _HEADERS.append((t, title))
+    _HEADERS.append((d, desc))
     return box
 
 
@@ -319,7 +347,8 @@ class BookPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         head = QHBoxLayout()
-        self.lbl_title = QLabel(title)
+        self._title_key = title
+        self.lbl_title = QLabel(i18n.tr(title))
         f = QFont()
         f.setBold(True)
         self.lbl_title.setFont(f)
@@ -336,17 +365,17 @@ class BookPanel(QWidget):
         self.view.setAcceptDrops(False)  # 拖放交给面板，避免列表吞事件
         lay.addWidget(self.view, 1)
 
-        self.hint = QLabel("把文件或文件夹拖到这里", self.view)
+        self.hint = QLabel(i18n.tr("把文件或文件夹拖到这里"), self.view)
         self.hint.setAlignment(Qt.AlignCenter)
         self.hint.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self.hint.setStyleSheet("color: #8a8a8a;")
         self.view.viewport().installEventFilter(self)
 
         btns = QHBoxLayout()
-        self.btn_add_file = QPushButton("添加文件")
-        self.btn_add_dir = QPushButton("添加文件夹")
-        self.btn_remove = QPushButton("移除选中")
-        self.btn_clear = QPushButton("清空")
+        self.btn_add_file = QPushButton(i18n.tr("添加文件"))
+        self.btn_add_dir = QPushButton(i18n.tr("添加文件夹"))
+        self.btn_remove = QPushButton(i18n.tr("移除选中"))
+        self.btn_clear = QPushButton(i18n.tr("清空"))
         for b in (self.btn_add_file, self.btn_add_dir, self.btn_remove, self.btn_clear):
             btns.addWidget(b)
         lay.addLayout(btns)
@@ -384,6 +413,15 @@ class BookPanel(QWidget):
             sig.connect(lambda *a: self._refresh_hint())
         self._refresh_hint()
 
+    def apply_lang(self):
+        """切语言时重设面板上自己的文字（标题 / 提示 / 四个按钮）。"""
+        self.lbl_title.setText(i18n.tr(self._title_key))
+        self.hint.setText(i18n.tr("把文件或文件夹拖到这里"))
+        self.btn_add_file.setText(i18n.tr("添加文件"))
+        self.btn_add_dir.setText(i18n.tr("添加文件夹"))
+        self.btn_remove.setText(i18n.tr("移除选中"))
+        self.btn_clear.setText(i18n.tr("清空"))
+
     def _refresh_hint(self):
         model = self.view.model()
         empty = model is None or model.rowCount() == 0
@@ -419,6 +457,7 @@ class CollectionDialog(QWidget):
 
     report_ready = Signal(str)   # 工作线程 → 主线程（QTimer.singleShot 跨线程不可靠）
 
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -430,31 +469,33 @@ class CollectionDialog(QWidget):
         row1 = QHBoxLayout()
         self.ed_collection = QLineEdit()
         self.ed_collection.setPlaceholderText("合集文件（EPUB/MOBI/PDF）")
-        b1 = QPushButton("浏览…")
+        self.btn_browse = b1 = QPushButton(i18n.tr("浏览…"))
         b1.clicked.connect(self._pick_collection)
-        row1.addWidget(QLabel("合集："))
+        self.lbl_coll = QLabel(i18n.tr("合集："))
+        row1.addWidget(self.lbl_coll)
         row1.addWidget(self.ed_collection, 1)
         row1.addWidget(b1)
         lay.addLayout(row1)
 
         self.list_src = QListWidget()
         row2 = QHBoxLayout()
-        b2 = QPushButton("添加分册…")
-        b3 = QPushButton("移除选中")
+        self.btn_add_src = b2 = QPushButton(i18n.tr("添加分册…"))
+        self.btn_rm_src = b3 = QPushButton(i18n.tr("移除选中"))
         b2.clicked.connect(self._add_sources)
         b3.clicked.connect(self._remove_sources)
         row2.addWidget(b2)
         row2.addWidget(b3)
         row2.addStretch(1)
-        lay.addWidget(QLabel("源分册："))
+        self.lbl_src = QLabel(i18n.tr("源分册："))
+        lay.addWidget(self.lbl_src)
         lay.addWidget(self.list_src, 1)
         lay.addLayout(row2)
 
         row3 = QHBoxLayout()
-        self.btn_start = QPushButton("开始检查")
+        self.btn_start = QPushButton(i18n.tr("开始检查"))
         self.btn_start.setEnabled(False)
         self.btn_start.clicked.connect(self._run)
-        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel = QPushButton(i18n.tr("取消"))
         self.btn_cancel.setEnabled(False)
         self.btn_cancel.clicked.connect(self._cancel)
         self.progress = QProgressBar()
@@ -474,6 +515,19 @@ class CollectionDialog(QWidget):
         self.report_ready.connect(self._finish)
 
     # -- 拖入：第一个文件当合集，其余当分册 --
+        self._tr_items = [
+            (self.lbl_coll, "text", "合集："),
+            (self.btn_browse, "text", "浏览…"),
+            (self.lbl_src, "text", "源分册："),
+            (self.btn_add_src, "text", "添加分册…"),
+            (self.btn_rm_src, "text", "移除选中"),
+            (self.btn_start, "text", "开始检查"),
+            (self.btn_cancel, "text", "取消"),
+        ]
+
+    def apply_lang(self):
+        _retr(self._tr_items)
+
     def dragEnterEvent(self, ev):
         if ev.mimeData().hasUrls():
             ev.acceptProposedAction()
@@ -553,7 +607,7 @@ class CollectionDialog(QWidget):
         self._busy = False
         self.btn_cancel.setEnabled(False)
         self.progress.setVisible(False)
-        self.txt_result.setPlainText(report)
+        self.txt_result.setPlainText(i18n.tr_report(report))
         self._refresh_start()
 
 
@@ -563,6 +617,7 @@ class EditDialog(QWidget):
     check_ready = Signal(dict)
     apply_ready = Signal(dict)
 
+
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.path = path
@@ -571,9 +626,9 @@ class EditDialog(QWidget):
         self._busy = False
         self._cover_path = None
         self.tabs = QTabWidget(self)
-        self.tabs.addTab(self._build_toc_tab(), "目录")
-        self.tabs.addTab(self._build_cover_tab(), "封面")
-        self.btn_swap = QPushButton("换一本…")
+        self.tabs.addTab(self._build_toc_tab(), i18n.tr("目录"))
+        self.tabs.addTab(self._build_cover_tab(), i18n.tr("封面"))
+        self.btn_swap = QPushButton(i18n.tr("换一本…"))
         self.lbl_path = ClickLabel()
         self.lbl_path.setMinimumHeight(56)
         self.lbl_path.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -594,29 +649,54 @@ class EditDialog(QWidget):
         self._refresh_enabled()
 
     # ---- 目录页 ----
+        self._tr_items = [
+            (self.btn_swap, "text", "换一本…"),
+            (self.grp_list, "title", "第 1 步　整理章节清单"),
+            (self.tip1, "text", "每行一个章节；行首缩进两格或写 1.1 表示层级；行尾写 -> 文件名 可指定目标。"
+                               "选中书以后这里已经按书内目录填好，你只要增删改。"),
+            (self.btn_import, "text", "从 txt / md / csv 导入…"),
+            (self.grp_check, "title", "第 2 步　检查目录（只看，不动原书）"),
+            (self.btn_check, "text", "检查目录结构"),
+            (self.grp_gen, "title", "第 3 步　写进新文件（原书不动，另存一本）"),
+            (self.btn_apply_toc, "text", "生成目录并另存…"),
+            (self.tip3, "text", "同时写 nav.xhtml 和 toc.ncx，写完自动自检。"),
+            (self.grp_fix, "title", "第 4 步　修复合并后重复的目录项（父项与唯一子项同标题同链接）"),
+            (self.btn_fix_dups, "text", "修复目录重复并另存…"),
+            (self.tip4, "text", "顺手把 ncx 的 playOrder 重排、dtb:depth 归 1；没有重复就不写文件。"),
+            (self.grp_cover, "title", "封面图（EPUB 只允许一张；原书已有会先问你）"),
+            (self.btn_pick_cover, "text", "选择图片…"),
+            (self.btn_clear_cover, "text", "清除"),
+            (self.btn_apply_cover, "text", "添加封面并另存…"),
+        ]
+
+    def apply_lang(self):
+        _retr(self._tr_items)
+        self.tabs.setTabText(0, i18n.tr("目录"))
+        self.tabs.setTabText(1, i18n.tr("封面"))
+
     def _build_toc_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setSpacing(8)
 
-        self.grp_list = QGroupBox("第 1 步　整理章节清单")
+        self.grp_list = QGroupBox(i18n.tr("第 1 步　整理章节清单"))
         g1 = QVBoxLayout(self.grp_list)
-        tip1 = QLabel("每行一个章节；行首缩进两格或写 1.1 表示层级；行尾写 -> 文件名 可指定目标。"
-                      "选中书以后这里已经按书内目录填好，你只要增删改。")
-        tip1.setWordWrap(True)
-        tip1.setStyleSheet("color: #9e9e9e;")
-        g1.addWidget(tip1)
+        self.tip1 = QLabel(i18n.tr("每行一个章节；行首缩进两格或写 1.1 表示层级；行尾写 -> 文件名 可指定目标。"
+                      "选中书以后这里已经按书内目录填好，你只要增删改。"))
+        self.tip1.setWordWrap(True)
+        self.tip1.setStyleSheet("color: #9e9e9e;")
+        g1.addWidget(self.tip1)
         self.txt_list = QPlainTextEdit()
         self.txt_list.setPlaceholderText(
             "第1章 开端 -> chapter1.xhtml\n  1.1 小标题 -> chapter1-1.xhtml")
         g1.addWidget(self.txt_list, 1)
-        self.btn_import = QPushButton("从 txt / md / csv 导入…")
+        self.btn_import = QPushButton(i18n.tr("从 txt / md / csv 导入…"))
         g1.addWidget(self.btn_import, 0, Qt.AlignLeft)
         lay.addWidget(self.grp_list, 2)
 
-        self.grp_check = QGroupBox("第 2 步　检查目录（只看，不动原书）")
+        self.grp_check = QGroupBox(i18n.tr("第 2 步　检查目录（只看，不动原书）"))
         g2 = QVBoxLayout(self.grp_check)
-        self.btn_check = QPushButton("检查目录结构")
+        self.btn_check = QPushButton(i18n.tr("检查目录结构"))
         g2.addWidget(self.btn_check, 0, Qt.AlignLeft)
         self.txt_report = QPlainTextEdit()
         self.txt_report.setReadOnly(True)
@@ -624,22 +704,22 @@ class EditDialog(QWidget):
         g2.addWidget(self.txt_report, 1)
         lay.addWidget(self.grp_check, 3)
 
-        self.grp_gen = QGroupBox("第 3 步　写进新文件（原书不动，另存一本）")
+        self.grp_gen = QGroupBox(i18n.tr("第 3 步　写进新文件（原书不动，另存一本）"))
         g3 = QHBoxLayout(self.grp_gen)
-        self.btn_apply_toc = QPushButton("生成目录并另存…")
-        tip3 = QLabel("同时写 nav.xhtml 和 toc.ncx，写完自动自检。")
-        tip3.setStyleSheet("color: #9e9e9e;")
+        self.btn_apply_toc = QPushButton(i18n.tr("生成目录并另存…"))
+        self.tip3 = QLabel(i18n.tr("同时写 nav.xhtml 和 toc.ncx，写完自动自检。"))
+        self.tip3.setStyleSheet("color: #9e9e9e;")
         g3.addWidget(self.btn_apply_toc)
-        g3.addWidget(tip3, 1)
+        g3.addWidget(self.tip3, 1)
         lay.addWidget(self.grp_gen)
 
-        self.grp_fix = QGroupBox("第 4 步　修复合并后重复的目录项（父项与唯一子项同标题同链接）")
+        self.grp_fix = QGroupBox(i18n.tr("第 4 步　修复合并后重复的目录项（父项与唯一子项同标题同链接）"))
         g4 = QHBoxLayout(self.grp_fix)
-        self.btn_fix_dups = QPushButton("修复目录重复并另存…")
-        tip4 = QLabel("顺手把 ncx 的 playOrder 重排、dtb:depth 归 1；没有重复就不写文件。")
-        tip4.setStyleSheet("color: #9e9e9e;")
+        self.btn_fix_dups = QPushButton(i18n.tr("修复目录重复并另存…"))
+        self.tip4 = QLabel(i18n.tr("顺手把 ncx 的 playOrder 重排、dtb:depth 归 1；没有重复就不写文件。"))
+        self.tip4.setStyleSheet("color: #9e9e9e;")
         g4.addWidget(self.btn_fix_dups)
-        g4.addWidget(tip4, 1)
+        g4.addWidget(self.tip4, 1)
         lay.addWidget(self.grp_fix)
 
         self.btn_import.clicked.connect(self._import_list)
@@ -688,7 +768,7 @@ class EditDialog(QWidget):
 
     def _on_check(self, ev):
         self._busy = False
-        self.txt_report.setPlainText(ev.get("report") or "")
+        self.txt_report.setPlainText(i18n.tr_report(ev.get("report") or ""))
         self._refresh_enabled()
 
     def _do_apply_toc(self):
@@ -719,7 +799,7 @@ class EditDialog(QWidget):
         lay = QVBoxLayout(w)
         lay.setSpacing(8)
 
-        self.grp_cover = QGroupBox("封面图（EPUB 只允许一张；原书已有会先问你）")
+        self.grp_cover = QGroupBox(i18n.tr("封面图（EPUB 只允许一张；原书已有会先问你）"))
         box = QVBoxLayout(self.grp_cover)
         self.lbl_preview = ClickLabel("把封面图片拖到这里\n或点一下选择")
         self.lbl_preview.setAlignment(Qt.AlignCenter)
@@ -727,12 +807,12 @@ class EditDialog(QWidget):
         self.lbl_preview.setMaximumHeight(300)
         self.lbl_preview.setStyleSheet(
             "border: 1px dashed #6b6b6b; border-radius: 6px; color: #9e9e9e;")
-        self.lbl_cover = QLabel("（未选择图片）")
+        self.lbl_cover = QLabel(i18n.tr("（未选择图片）"))
         self.lbl_cover.setWordWrap(True)
         row = QHBoxLayout()
-        self.btn_pick_cover = QPushButton("选择图片…")
-        self.btn_clear_cover = QPushButton("清除")
-        self.btn_apply_cover = QPushButton("添加封面并另存…")
+        self.btn_pick_cover = QPushButton(i18n.tr("选择图片…"))
+        self.btn_clear_cover = QPushButton(i18n.tr("清除"))
+        self.btn_apply_cover = QPushButton(i18n.tr("添加封面并另存…"))
         row.addWidget(self.btn_pick_cover)
         row.addWidget(self.btn_clear_cover)
         row.addStretch(1)
@@ -945,6 +1025,7 @@ class MergeDialog(QWidget):
     merge_done = Signal(dict)
     stage_changed = Signal(str)
 
+
     def __init__(self, parent=None, paths=None):
         super().__init__(parent)
         self.setAcceptDrops(True)
@@ -958,7 +1039,8 @@ class MergeDialog(QWidget):
         lay = QVBoxLayout(self)
 
         row_title = QHBoxLayout()
-        row_title.addWidget(QLabel("书名："))
+        self.lbl_title_key = QLabel(i18n.tr("书名："))
+        row_title.addWidget(self.lbl_title_key)
         self.ed_title = QLineEdit()
         self.ed_title.setText("合并_2本")
         self.ed_title.setPlaceholderText("合并_2本")
@@ -977,46 +1059,48 @@ class MergeDialog(QWidget):
         lay.addWidget(self.panel, 1)
 
         row_order = QHBoxLayout()
-        self.btn_up = QPushButton("上移")
-        self.btn_down = QPushButton("下移")
+        self.btn_up = QPushButton(i18n.tr("上移"))
+        self.btn_down = QPushButton(i18n.tr("下移"))
         self.btn_up.clicked.connect(lambda: self._move(-1))
         self.btn_down.clicked.connect(lambda: self._move(1))
         row_order.addWidget(self.btn_up)
         row_order.addWidget(self.btn_down)
         row_order.addStretch(1)
-        row_order.addWidget(QLabel("封面："))
-        self.rb_auto = QRadioButton("取第一本")
-        self.rb_none = QRadioButton("不要封面")
-        self.rb_file = QRadioButton("指定图片")
+        self.lbl_cover_key = QLabel(i18n.tr("封面："))
+        row_order.addWidget(self.lbl_cover_key)
+        self.rb_auto = QRadioButton(i18n.tr("取第一本"))
+        self.rb_none = QRadioButton(i18n.tr("不要封面"))
+        self.rb_file = QRadioButton(i18n.tr("指定图片"))
         self.rb_auto.setChecked(True)
         for rb in (self.rb_auto, self.rb_none, self.rb_file):
             rb.toggled.connect(self._refresh_start)
             row_order.addWidget(rb)
-        self.btn_pick_cover = QPushButton("选图…")
+        self.btn_pick_cover = QPushButton(i18n.tr("选图…"))
         self.btn_pick_cover.clicked.connect(self._pick_cover)
         row_order.addWidget(self.btn_pick_cover)
         lay.addLayout(row_order)
 
-        self.lbl_cover = QLabel("未选封面图片")
+        self.lbl_cover = QLabel(i18n.tr("未选封面图片"))
         lay.addWidget(self.lbl_cover)
 
         row_out = QHBoxLayout()
-        row_out.addWidget(QLabel("输出："))
+        self.lbl_out_key = QLabel(i18n.tr("输出："))
+        row_out.addWidget(self.lbl_out_key)
         self.ed_out = QLineEdit()
         self.ed_out.textChanged.connect(self._out_changed)
         row_out.addWidget(self.ed_out, 1)
-        self.btn_out = QPushButton("浏览…")
+        self.btn_out = QPushButton(i18n.tr("浏览…"))
         self.btn_out.clicked.connect(self._pick_out)
         row_out.addWidget(self.btn_out)
         lay.addLayout(row_out)
 
         row_go = QHBoxLayout()
-        self.btn_start = QPushButton("开始合并")
+        self.btn_start = QPushButton(i18n.tr("开始合并"))
         self.btn_start.setObjectName("Accent")
         self.btn_start.clicked.connect(self._run)
-        self.btn_cancel = QPushButton("取消")
+        self.btn_cancel = QPushButton(i18n.tr("取消"))
         self.btn_cancel.clicked.connect(self._cancel_merge)
-        self.btn_open = QPushButton("打开所在文件夹")
+        self.btn_open = QPushButton(i18n.tr("打开所在文件夹"))
         self.btn_open.setEnabled(False)
         self.btn_open.clicked.connect(self._open_dir)
         row_go.addWidget(self.btn_start)
@@ -1028,7 +1112,7 @@ class MergeDialog(QWidget):
         self.progress = QProgressBar()
         self.progress.setValue(0)
         lay.addWidget(self.progress)
-        self.stage = QLabel("就绪")
+        self.stage = QLabel(i18n.tr("就绪"))
         lay.addWidget(self.stage)
 
         self.txt_result = QPlainTextEdit()
@@ -1044,6 +1128,30 @@ class MergeDialog(QWidget):
         self._refresh_start()
 
     # ---------- 列表 ----------
+        self._tr_items = [
+            (self.lbl_title_key, "text", "书名："),
+            (self.btn_up, "text", "上移"),
+            (self.btn_down, "text", "下移"),
+            (self.lbl_cover_key, "text", "封面："),
+            (self.rb_auto, "text", "取第一本"),
+            (self.rb_none, "text", "不要封面"),
+            (self.rb_file, "text", "指定图片"),
+            (self.btn_pick_cover, "text", "选图…"),
+            (self.lbl_out_key, "text", "输出："),
+            (self.btn_out, "text", "浏览…"),
+            (self.btn_start, "text", "开始合并"),
+            (self.btn_cancel, "text", "取消"),
+            (self.btn_open, "text", "打开所在文件夹"),
+        ]
+
+    def apply_lang(self):
+        _retr(self._tr_items)
+        self.panel.apply_lang()
+        if not getattr(self, "_running", False) and not getattr(self, "_busy", False):
+            self.stage.setText(i18n.tr("就绪"))
+        if not getattr(self, "_cover_file", ""):
+            self.lbl_cover.setText(i18n.tr("未选封面图片"))
+
     def _cancel_merge(self):
         """合并是单次同步调用，没有中断点；这里只停掉等待状态。"""
         self.stage.setText("已取消（当前步骤结束后停止）")
@@ -1090,7 +1198,7 @@ class MergeDialog(QWidget):
             added += 1
         self.panel.lbl_count.setText(str(self.model.rowCount()))
         if not self.ed_title.text().strip() or not self._out_touched:
-            self.ed_title.setText("合并_%d本" % max(self.model.rowCount(), 2))
+            self.ed_title.setText(_default_merge_title(max(self.model.rowCount(), 2)))
             self._out_touched = False
             self._sync_out()
         if rejected:
@@ -1166,7 +1274,7 @@ class MergeDialog(QWidget):
             self.ed_out.setText("")
             self._out_touched = False
             return
-        title = self.ed_title.text().strip() or "合并_%d本" % len(ps)
+        title = self.ed_title.text().strip() or _default_merge_title(len(ps))
         self.ed_out.setText(core.default_merge_dst(ps, title))
         self._out_touched = False
 
@@ -1205,7 +1313,7 @@ class MergeDialog(QWidget):
         if len(ps) < 2:
             return
         dst = self.ed_out.text().strip()
-        title = self.ed_title.text().strip() or "合并_%d本" % len(ps)
+        title = self.ed_title.text().strip() or _default_merge_title(len(ps))
         cover = self._cover_arg()
         self._lock(True)
         self.progress.setValue(0)
@@ -1231,11 +1339,11 @@ class MergeDialog(QWidget):
             self.progress.setValue(self.progress.maximum())
             self.stage.setText("完成")
             size = core.fmt_size(os.path.getsize(ev["path"]))
-            self.txt_result.setPlainText("合并成功：%s\n大小：%s" % (ev["path"], size))
+            self.txt_result.setPlainText(i18n.tr_report("合并成功：%s\n大小：%s" % (ev["path"], size)))
             self.btn_open.setEnabled(True)
         else:
             self.stage.setText("失败")
-            self.txt_result.setPlainText("合并失败：%s" % ev.get("err", ""))
+            self.txt_result.setPlainText(i18n.tr_report("合并失败：%s" % ev.get("err", "")))
 
     def _open_dir(self):
         path = self.ed_out.text().strip()
@@ -1270,6 +1378,7 @@ class MainWindow(QMainWindow):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._on_row_menu)
         self._load_settings()
+        self._apply_lang(str(self._settings().value("lang") or "auto"), save=False)
         self.bridge.row_ready.connect(self._on_row)
         self.bridge.stage_changed.connect(self._on_stage)
         self.bridge.finished.connect(self._on_done)
@@ -1278,6 +1387,93 @@ class MainWindow(QMainWindow):
         self.btn_cancel.clicked.connect(self.cancel_compare)
         self.btn_collection.clicked.connect(self.open_collection_dialog)
         self.btn_edit.clicked.connect(self.open_edit_dialog)
+
+    # ---------- 语言 ----------
+
+    def _apply_lang(self, lang, save=True):
+        """lang: 'zh' | 'en' | 'auto'。切完立即重刷样板页的文案。"""
+        real = i18n.set_lang(lang)
+        want = lang if lang in ("zh", "en", "auto") else "auto"
+        if hasattr(self, "combo_lang"):
+            j = self.combo_lang.findData(want)
+            if j >= 0 and self.combo_lang.currentIndex() != j:
+                self.combo_lang.blockSignals(True)
+                self.combo_lang.setCurrentIndex(j)
+                self.combo_lang.blockSignals(False)
+        if save:
+            s = self._settings()
+            s.setValue("lang", lang)
+            s.sync()
+        self._retranslate()
+        return real
+
+    def _on_lang_changed(self, _idx):
+        self._apply_lang(str(self.combo_lang.currentData() or "auto"))
+
+    def _retranslate(self):
+        """把已翻好的部分（侧栏 + 比对页）按当前语言重设一遍。"""
+        if hasattr(self, "lbl_app_title"):
+            self.lbl_app_title.setText(i18n.tr("EPUB 检查器"))
+        for btn, key, tip in (
+            (getattr(self, "btn_mode_compare", None), "比对",
+             "当前页：基准（A）与待检（B）的文件比对"),
+            (getattr(self, "btn_edit", None), "编辑工具…",
+             "当前页：检查目录、生成目录、加封面"),
+            (getattr(self, "btn_merge", None), "合并 EPUB…", "当前页：把多本 EPUB 合并成一册"),
+            (getattr(self, "btn_collection", None), "合集检查…",
+             "当前页：核查分册是否都在合集里"),
+        ):
+            if btn is not None:
+                btn.setText(i18n.tr(key))
+                btn.setToolTip(i18n.tr(tip))
+        if hasattr(self, "lbl_lang"):
+            self.lbl_lang.setText(i18n.tr("语言"))
+            for i, (k, _d) in enumerate((("中文", "zh"), ("English", "en"),
+                                         ("跟随系统", "auto"))):
+                self.combo_lang.setItemText(i, k if k == "English" else i18n.tr(k))
+        for panel in (getattr(self, "panel_a", None), getattr(self, "panel_b", None)):
+            if panel is None:
+                continue
+            panel.lbl_title.setText(i18n.tr(panel._title_key))
+            panel.hint.setText(i18n.tr("把文件或文件夹拖到这里"))
+            panel.btn_add_file.setText(i18n.tr("添加文件"))
+            panel.btn_add_dir.setText(i18n.tr("添加文件夹"))
+            panel.btn_remove.setText(i18n.tr("移除选中"))
+            panel.btn_clear.setText(i18n.tr("清空"))
+        for name, key in (("btn_start", "开始比对"), ("btn_cancel", "取消"),
+                          ("btn_export", "导出 CSV")):
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setText(i18n.tr(key))
+        if hasattr(self, "lbl_filter"):
+            self.lbl_filter.setText(i18n.tr("只看"))
+        if hasattr(self, "task_model"):
+            self.task_model.set_headers([i18n.tr(k) for k in COLUMN_KEYS])
+        if hasattr(self, "tabs"):
+            self.tabs.setTabText(0, i18n.tr("任务表"))
+            if self.tabs.count() > 1:
+                self.tabs.setTabText(1, i18n.tr("详细报告"))
+        if hasattr(self, "detail_bar"):
+            self.detail_bar.setText(i18n.tr("双击任务表某一行查看该文件的详细报告"))
+        if hasattr(self, "combo_filter"):
+            # 过滤项的文字也要跟着换；重建后按 itemData 还原选中项
+            cur = str(self.combo_filter.currentData() or "")
+            old = self.combo_filter.blockSignals(True)
+            self.combo_filter.clear()
+            self.combo_filter.addItem(i18n.tr("全部"), "")
+            for _st in core.ALL_STATUS:
+                self.combo_filter.addItem(i18n.tr(core.STATUS_TEXT.get(_st, _st)), _st)
+            j = self.combo_filter.findData(cur)
+            self.combo_filter.setCurrentIndex(j if j >= 0 else 0)
+            self.combo_filter.blockSignals(bool(old))
+        for _lbl, _key in _HEADERS:
+            _lbl.setText(i18n.tr(_key))
+        for _p in (getattr(self, "page_edit", None), getattr(self, "page_merge", None),
+                   getattr(self, "page_coll", None)):
+            if _p is not None and hasattr(_p, "apply_lang"):
+                _p.apply_lang()
+        if hasattr(self, "stage"):
+            self.stage.setText(i18n.tr("就绪"))
 
     def _goto(self, index):
         """切到右侧第 index 页，并同步侧栏按钮选中态。"""
@@ -1323,7 +1519,7 @@ class MainWindow(QMainWindow):
         s = self._settings()
         s.setValue("geometry", self.saveGeometry())
         s.setValue("columns", [self.table.columnWidth(i) for i in range(len(COLUMNS))])
-        s.setValue("filter", self.combo_filter.currentText())
+        s.setValue("filter", str(self.combo_filter.currentData() or ""))
         s.setValue("ui_version", VERSION)
         s.sync()
 
@@ -1338,8 +1534,10 @@ class MainWindow(QMainWindow):
             for i, w in enumerate(cols):
                 self.table.setColumnWidth(i, int(w))
         f = s.value("filter")
-        if f:
-            self.combo_filter.setCurrentText(str(f))
+        if f is not None and str(f) != "":
+            j = self.combo_filter.findData(str(f))
+            if j >= 0:
+                self.combo_filter.setCurrentIndex(j)
 
     def closeEvent(self, ev):
         self._save_settings()
@@ -1402,25 +1600,26 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 12, 10, 12)
         lay.setSpacing(8)
 
-        title = QLabel("EPUB 检查器")
+        self.lbl_app_title = QLabel(i18n.tr("EPUB 检查器"))
+        title = self.lbl_app_title
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
 
-        self.btn_mode_compare = QPushButton("比对")
+        self.btn_mode_compare = QPushButton(i18n.tr("比对"))
         self.btn_mode_compare.setCheckable(True)
         self.btn_mode_compare.setChecked(True)
-        self.btn_mode_compare.setToolTip("当前页：基准（A）与待检（B）的文件比对")
+        self.btn_mode_compare.setToolTip(i18n.tr("当前页：基准（A）与待检（B）的文件比对"))
         lay.addWidget(self.btn_mode_compare)
 
-        self.btn_edit = QPushButton("编辑工具…")
+        self.btn_edit = QPushButton(i18n.tr("编辑工具…"))
         self.btn_edit.setToolTip("给单本 EPUB 检查/生成目录、添加封面")
         lay.addWidget(self.btn_edit)
 
-        self.btn_merge = QPushButton("合并 EPUB…")
+        self.btn_merge = QPushButton(i18n.tr("合并 EPUB…"))
         self.btn_merge.setToolTip("把多本 EPUB 合成一本合集")
         lay.addWidget(self.btn_merge)
 
-        self.btn_collection = QPushButton("合集检查…")
+        self.btn_collection = QPushButton(i18n.tr("合集检查…"))
         self.btn_collection.setToolTip("检查合集里是否缺页/重复页")
         lay.addWidget(self.btn_collection)
 
@@ -1440,9 +1639,18 @@ class MainWindow(QMainWindow):
         self.progress.setFormat("%v/%m")
         lay.addWidget(self.progress)
 
-        self.stage = QLabel("就绪")
+        self.stage = QLabel(i18n.tr("就绪"))
         self.stage.setWordWrap(True)
         lay.addWidget(self.stage)
+
+        self.lbl_lang = QLabel(i18n.tr("语言"))
+        lay.addWidget(self.lbl_lang)
+        self.combo_lang = QComboBox()
+        self.combo_lang.addItem(i18n.tr("中文"), "zh")
+        self.combo_lang.addItem("English", "en")
+        self.combo_lang.addItem(i18n.tr("跟随系统"), "auto")
+        self.combo_lang.currentIndexChanged.connect(self._on_lang_changed)
+        lay.addWidget(self.combo_lang)
         lay.addStretch(1)
         return side
 
@@ -1508,8 +1716,8 @@ class MainWindow(QMainWindow):
         root.addLayout(top)
 
         bar = QHBoxLayout()
-        self.btn_start = QPushButton("开始比对")
-        self.btn_cancel = QPushButton("取消")
+        self.btn_start = QPushButton(i18n.tr("开始比对"))
+        self.btn_cancel = QPushButton(i18n.tr("取消"))
         self.btn_cancel.setEnabled(False)
         bar.addWidget(self.btn_start)
         bar.addWidget(self.btn_cancel)
@@ -1518,13 +1726,16 @@ class MainWindow(QMainWindow):
 
         # 结论过滤 + 导出：属于比对结果，放在比对页里（不再占侧栏）
         frow = QHBoxLayout()
-        frow.addWidget(QLabel("只看"))
+        self.lbl_filter = QLabel(i18n.tr("只看"))
+        frow.addWidget(self.lbl_filter)
         self.combo_filter = QComboBox()
-        self.combo_filter.addItems(["全部"] + list(core.ALL_STATUS))
+        self.combo_filter.addItem(i18n.tr("全部"), "")
+        for _st in core.ALL_STATUS:
+            self.combo_filter.addItem(i18n.tr(core.STATUS_TEXT.get(_st, _st)), _st)
         self.combo_filter.setMinimumWidth(150)
         frow.addWidget(self.combo_filter)
         frow.addStretch(1)
-        self.btn_export = QPushButton("导出 CSV")
+        self.btn_export = QPushButton(i18n.tr("导出 CSV"))
         frow.addWidget(self.btn_export)
         root.addLayout(frow)
 
@@ -1542,17 +1753,17 @@ class MainWindow(QMainWindow):
         # 摘要/备注列要看全，默认给足宽度（用户可在界面上拖，也会被 ini 记住）
         for col, w in ((0, 60), (1, 200), (2, 200), (3, 80), (4, 150), (5, 340), (6, 200)):
             self.table.setColumnWidth(col, w)
-        self.tabs.addTab(self.table, "任务表")
+        self.tabs.addTab(self.table, i18n.tr("任务表"))
 
         detail = QWidget()
         dlay = QVBoxLayout(detail)
-        self.detail_bar = QLabel("双击任务表某一行查看该文件的详细报告")
+        self.detail_bar = QLabel(i18n.tr("双击任务表某一行查看该文件的详细报告"))
         self.detail_text = QPlainTextEdit()
         self.detail_text.setReadOnly(True)
         self.detail_text.setMaximumBlockCount(20000)
         dlay.addWidget(self.detail_bar)
         dlay.addWidget(self.detail_text, 1)
-        self.tabs.addTab(detail, "详细报告")
+        self.tabs.addTab(detail, i18n.tr("详细报告"))
         root.addWidget(self.tabs, 1)
 
         self.combo_filter.currentTextChanged.connect(self._apply_filter)
@@ -1724,7 +1935,14 @@ class MainWindow(QMainWindow):
             self.stage.setText(ev.get("text", ""))
 
     # -- 过滤 / 导出 / 详情 --
-    def _apply_filter(self, text):
+    def _apply_filter(self, status=None):
+        # 下拉项的显示文字随语言变化，真正参与过滤的是 itemData 里的状态名；
+        # 传参时兼容「原始状态名」与「全部」两种旧写法。
+        if status in ("全部", "All"):
+            status = ""
+        if not isinstance(status, str) or status not in [""] + list(core.ALL_STATUS):
+            status = str(self.combo_filter.currentData() or "")
+        text = status
         self.proxy.set_status(text)
         self.statusBar().showMessage(
             f"显示 {self.proxy.rowCount()} / 共 {self.task_model.rowCount()} 行", 4000)
@@ -1770,9 +1988,9 @@ class MainWindow(QMainWindow):
                     r = core.compare_books(base, path)
                     detail = r.get("detail") or []
                     if detail:
-                        rep += "\n\n—— 与「%s」的逐条差异 ——\n" % os.path.basename(base)
-                        rep += "结论：%s  %s\n\n" % (
-                            core.STATUS_TEXT.get(r["status"], r["status"]),
+                        rep += "\n\n" + ("--- Differences against「%s」---" if i18n.current() == "en" else "—— 与「%s」的逐条差异 ——") % os.path.basename(base) + "\n"
+                        rep += ("Conclusion: %s  %s\n\n" if i18n.current() == "en" else "结论：%s  %s\n\n") % (
+                            i18n.tr(core.STATUS_TEXT.get(r["status"], r["status"])),
                             r.get("summary", ""))
                         rep += "\n".join(detail)
                 except Exception as e:
@@ -1784,10 +2002,12 @@ class MainWindow(QMainWindow):
 
     def _on_detail(self, ev):
         # 报告主体是【待检 B】, 基准 A 只在文末做对照
+        fmt = ("Details  Checked (B): %s  |  Baseline (A): %s"
+               if i18n.current() == "en" else
+               "详细报告　待检（B）：%s　｜　基准（A）：%s")
         self.detail_bar.setText(
-            "详细报告　待检（B）：%s　｜　基准（A）：%s"
-            % (os.path.basename(ev["path"]), os.path.basename(ev.get("base") or "")))
-        self.detail_text.setPlainText(ev["report"])
+            fmt % (os.path.basename(ev["path"]), os.path.basename(ev.get("base") or "")))
+        self.detail_text.setPlainText(i18n.tr_report(ev["report"]))
         # 有逐条差异时直接滚到那一段, 免得用户自己往下翻
         cur = self.detail_text.textCursor()
         pos = ev["report"].find("—— 与「")

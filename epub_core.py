@@ -28,7 +28,7 @@ try:
 except ImportError:
     _NP = None
 
-__version__ = "3.15"
+__version__ = "3.18"
 
 from epub_parse import *  # noqa: F401,F403
 from epub_parse import (local, resolve, rel_to_opf, fmt_size, is_text_media,
